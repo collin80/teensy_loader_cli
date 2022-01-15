@@ -80,6 +80,8 @@ int boot_only = 0;
 int code_size = 0, block_size = 0;
 const char *filename=NULL;
 
+//list of product IDs that should work with soft reset
+uint16_t prodIDs[] = {0x0483, 0x048B, 0x048C, 0x0487, 0x0489, 0x048A, 0x0476, 0};
 
 /****************************************************************/
 /*                                                              */
@@ -191,7 +193,7 @@ int main(int argc, char **argv)
 		} else {
 			die("Unknown code/block size\n");
 		}
-		r = teensy_write(buf, write_size, first_block ? 5.0 : 0.5);
+		r = teensy_write(buf, write_size, first_block ? 7.0 : 1.5);
 		if (!r) die("error writing to Teensy\n");
 		first_block = 0;
 	}
@@ -334,7 +336,12 @@ int soft_reboot(void)
 {
 	usb_dev_handle *serial_handle = NULL;
 
-	serial_handle = open_usb_device(0x16C0, 0x0483);
+    //soft reboot should work with a variety of product IDs that Teensy can present itself as.
+    //Try them all and see which one works. Not an elegant solution but it's functional.
+    int idx = 0;
+
+    while (prodIDs[idx] && !serial_handle) serial_handle = open_usb_device(0x16C0, prodIDs[idx++]);
+
 	if (!serial_handle) {
 		char *error = usb_strerror();
 		printf("Error opening USB device: %s\n", error);
@@ -517,8 +524,30 @@ int hard_reboot(void)
 
 int soft_reboot(void)
 {
-	printf("Soft reboot is not implemented for Win32\n");
-	return 0;
+	HANDLE serial_handle = NULL;
+
+    //soft reboot should work with a variety of product IDs that Teensy can present itself as.
+    //Try them all and see which one works. Not an elegant solution but it's functional.
+    int idx = 0;
+
+    while (prodIDs[idx] && !serial_handle) serial_handle = open_usb_device(0x16C0, prodIDs[idx++]);
+
+	if (!serial_handle) {
+		printf("Error opening USB device\n");
+		return 0;
+	}
+
+	char reboot_command[] = {0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08};
+	int response = write_usb_device(serial_handle, reboot_command, sizeof(reboot_command), 10000);
+
+    closeHandle(serial_handle);
+
+	if (response < 0) {
+		printf("Unable to soft reboot with USB error: %s\n", response);
+		return 0;
+	}
+
+	return 1;
 }
 
 #endif
