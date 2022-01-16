@@ -377,8 +377,8 @@ int soft_reboot(void)
 // http://msdn.microsoft.com/en-us/library/ms790932.aspx
 #include <windows.h>
 #include <setupapi.h>
-#include <ddk/hidsdi.h>
-#include <ddk/hidclass.h>
+#include <hidsdi.h>
+#include <hidclass.h>
 
 HANDLE open_usb_device(int vid, int pid)
 {
@@ -436,7 +436,7 @@ HANDLE open_usb_device(int vid, int pid)
 int write_usb_device(HANDLE h, void *buf, int len, int timeout)
 {
 	static HANDLE event = NULL;
-	unsigned char tmpbuf[1089];
+	unsigned char tmpbuf[1090];
 	OVERLAPPED ov;
 	DWORD n, r;
 
@@ -466,13 +466,13 @@ int write_usb_device(HANDLE h, void *buf, int len, int timeout)
 
 void print_win32_err(void)
 {
-	char buf[256];
-	DWORD err;
+        char buf[256];
+        DWORD err;
 
-	err = GetLastError();
-	FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, err,
-		0, buf, sizeof(buf), NULL);
-	printf("err %ld: %s\n", err, buf);
+        err = GetLastError();
+        FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, err,
+                0, buf, sizeof(buf), NULL);
+        printf("err %ld: %s\n", err, buf);
 }
 
 static HANDLE win32_teensy_handle = NULL;
@@ -488,19 +488,18 @@ int teensy_open(void)
 int teensy_write(void *buf, int len, double timeout)
 {
 	int r;
-	uint32_t begin, now, total;
-
+	uint32_t begin, now, total; 
 	if (!win32_teensy_handle) return 0;
-	total = (uint32_t)(timeout * 1000.0);
-	begin = timeGetTime();
-	now = begin;
-	do {
-		r = write_usb_device(win32_teensy_handle, buf, len, total - (now - begin));
-		if (r > 0) return 1;
-		Sleep(10);
-		now = timeGetTime();
-	} while (now - begin < total);
-	return 0;
+	total = (uint32_t)(timeout * 1000.0); 
+	begin = timeGetTime(); 
+	now = begin; 
+	do { 
+		r = write_usb_device(win32_teensy_handle, buf, len, total - (now - begin)); 
+		if (r > 0) return 1; 
+		Sleep(10); 
+		now = timeGetTime(); 
+	} while (now - begin < total); 
+	return 0; 
 }
 
 void teensy_close(void)
@@ -522,36 +521,315 @@ int hard_reboot(void)
 	return r;
 }
 
+/*********** following for soft reboot on teensy **********************/
+
+typedef struct hid_struct {
+	HANDLE h;
+	int vid;
+	int pid;
+} hid_struct_t;
+
+int is_teensyduino_hid(int vid, int pid)
+{
+	if (vid == 0x16C0) {
+		if (pid == 0x0478) return 1; //WMXZ needed to recognize Teensy for Programming
+		if (pid == 0x0482) return 1;
+		if (pid == 0x0484) return 1;
+		if (pid == 0x0485) return 1;
+		if (pid == 0x0486) return 1;
+		if (pid == 0x0488) return 1;
+		if (pid == 0x048a) return 1;
+		if (pid == 0x048b) return 1;
+		if (pid == 0x048c) return 1;
+		if (pid == 0x0476) return 1;
+		if (pid == 0x0489) return 1;
+		if (pid == 0x0487) return 1;
+	}
+	return 0;
+}
+
+void verbosePrintTeensyType(int capUsage)
+{
+		if((int)(capUsage) == 0x001D)
+			printf_verbose(" have Teensy 3.0\n");
+		else if((int)(capUsage) == 0x001E)
+			printf_verbose(" have Teensy 3.1\n");
+		else if((int)(capUsage) == 0x0020)
+			printf_verbose(" have Teensy LC\n");
+		else if((int)(capUsage) == 0x0021)
+			printf_verbose(" have Teensy 3.2\n");
+		else if((int)(capUsage) == 0x0022)
+			printf_verbose(" have Teensy 3.6\n");
+		else if((int)(capUsage) == 0x001F)
+			printf_verbose(" have Teensy 3.5\n");
+}
+
+int hid_send_feature(hid_struct_t *h)
+{
+	unsigned char buf[5] = {0, 0xA9, 0x45, 0xC2, 0x6B};
+
+	printf_verbose("hid_send_feature\n");
+	if ((h->vid == 0x16C0) && !(h->pid == 0x0478)) // we need to be rebooted
+		if (!HidD_SetFeature(h->h, buf, 5)) {
+			printf("error sending reboot command\n");
+		}
+	CloseHandle(h->h);
+	return 0;
+}
+
+hid_struct_t * find_teensy_hid(void)
+{
+	GUID guid;
+        HDEVINFO info;
+        DWORD index=0, reqd_size;
+        SP_DEVICE_INTERFACE_DATA iface;
+        SP_DEVICE_INTERFACE_DETAIL_DATA *details;
+        HIDD_ATTRIBUTES attrib;
+	struct hid_struct *hid;
+        PHIDP_PREPARSED_DATA hid_data;
+        HIDP_CAPS capabilities;
+        HANDLE h;
+        BOOL ret;
+
+	printf_verbose("\n **** Find teensy on HID device list ****\n");
+		
+	HidD_GetHidGuid(&guid);
+	info = SetupDiGetClassDevs(&guid, NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+	if (info == INVALID_HANDLE_VALUE) return 0;
+	for (index=0; 1 ;index++) {
+		iface.cbSize = sizeof(SP_DEVICE_INTERFACE_DATA);
+		ret = SetupDiEnumDeviceInterfaces(info, NULL, &guid, index, &iface);
+		if (!ret) return 0;
+		
+		SetupDiGetInterfaceDeviceDetail(info, &iface, NULL, 0, &reqd_size, NULL);
+		details = (SP_DEVICE_INTERFACE_DETAIL_DATA *)malloc(reqd_size);
+		if (details == NULL) continue;
+
+		memset(details, 0, reqd_size);
+		details->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA);
+		ret = SetupDiGetDeviceInterfaceDetail(info, &iface, details, reqd_size, NULL, NULL);
+		if (!ret) {
+			free(details);
+			continue;
+		}
+		h = CreateFile(details->DevicePath, GENERIC_READ|GENERIC_WRITE,
+			FILE_SHARE_READ|FILE_SHARE_WRITE, NULL,
+			OPEN_EXISTING, 0, NULL);
+		free(details);
+		if (h == INVALID_HANDLE_VALUE) continue;
+		//
+		attrib.Size = sizeof(HIDD_ATTRIBUTES);
+		ret = HidD_GetAttributes(h, &attrib);
+		if (!ret) {
+			CloseHandle(h);
+			continue;
+		}
+		
+		char stringBuffer[32]; stringBuffer[0]=0;
+		HidD_GetSerialNumberString(h,stringBuffer,32);
+		printf_verbose("\nfound_hid:\n");
+		printf_verbose("    vid = 0x%04X,", (int)(attrib.VendorID));
+		printf_verbose("    pid = 0x%04X",  (int)(attrib.ProductID));
+		printf_verbose("    ser = %ls\n",  stringBuffer);
+		
+		if (!is_teensyduino_hid(attrib.VendorID, attrib.ProductID)) {
+			CloseHandle(h);
+			printf_verbose("no Teensy\n");
+			continue;
+		}
+		if (!HidD_GetPreparsedData(h, &hid_data)) {
+			CloseHandle(h);
+			continue;
+		}
+		if (!HidP_GetCaps(hid_data, &capabilities)) {
+			HidD_FreePreparsedData(hid_data);
+			CloseHandle(h);
+			continue;
+		}
+		printf_verbose(" use = 0x%04X 0x%04X\n",  (int)(capabilities.UsagePage), (int)(capabilities.Usage));
+		if ((((int)(attrib.ProductID)==0x0478) && (capabilities.UsagePage != 0xFF9C))
+			|| (((int)(attrib.ProductID)!=0x0478) && (capabilities.UsagePage != 0xFFC9)))
+		{
+			HidD_FreePreparsedData(hid_data);
+			CloseHandle(h);
+			continue;
+		}
+		HidD_FreePreparsedData(hid_data);
+
+		verbosePrintTeensyType((int)(capabilities.Usage));
+		printf_verbose("\n");
+		//
+		hid = (struct hid_struct *)malloc(sizeof(struct hid_struct));
+		if (!hid) {
+			// TODO: should this close the handle and continue?
+			return 0;
+		}
+		hid->h = h;	// handle for 
+		hid->vid = attrib.VendorID;
+		hid->pid = attrib.ProductID;
+		return hid;
+	}
+}
+
+int multi_has(void *buf, const char *str)
+{
+	const char *p;
+	int len;
+
+	len =  strlen(str);
+	for (p = (const char *)buf; *p; p += strlen(p) + 1) {if (strnicmp(p, str, len) == 0) return 1;	}
+	return 0;
+}
+
+int find_teensy_serial(char *name)
+{
+	GUID guid;
+	DWORD n, size, type;
+	HDEVINFO info;
+	LONG r;
+	SP_DEVINFO_DATA data;
+	HKEY key;
+	BYTE buf[1024];
+	int com;
+
+	printf_verbose("\n **** Find teensy on Serial ports ****\n");
+	if (!SetupDiClassGuidsFromName("Ports", &guid, 1, &n) || 
+		(info =SetupDiGetClassDevs(&guid, NULL, NULL, DIGCF_PRESENT)) == INVALID_HANDLE_VALUE) 
+	{
+		printf_verbose("Unable to get GUID for Ports class\n");
+		return 0;
+	}
+
+	for (n = 0; ; n++) {
+		data.cbSize = sizeof(data);
+		if (!SetupDiEnumDeviceInfo(info, n, &data)) break;
+		printf_verbose("\nDevice Instance: %ld\n", data.DevInst);
+		if (!SetupDiGetDeviceRegistryProperty(info, &data,
+			SPDRP_HARDWAREID , &type, buf, sizeof(buf), NULL)) 
+		{
+			continue;
+		}
+		printf_verbose("  DeviceRegistryProperty: acquired\n");
+		
+		if (type != REG_MULTI_SZ) continue;
+//		printf_verbose("  Key type: REG_MULTI_SZ\n");
+//		if (verbose) print_multi(buf);
+		if (!(multi_has(buf, "USB\\Vid_16c0&Pid_0483")
+		   || multi_has(buf, "USB\\Vid_16c0&Pid_0487")
+	   	   || multi_has(buf, "USB\\Vid_16c0&Pid_0485")
+		   || multi_has(buf, "USB\\Vid_16c0&Pid_0476")
+		   || multi_has(buf, "USB\\Vid_16c0&Pid_048A")
+           || multi_has(buf, "USB\\Vid_16c0&Pid_0489")
+		   || multi_has(buf, "USB\\Vid_16c0&Pid_048B")
+           || multi_has(buf, "USB\\Vid_16c0&Pid_048C")
+		   )) continue;
+		 
+		printf_verbose("Found Teensy:\n");
+		key = SetupDiOpenDevRegKey(info, &data, DICS_FLAG_GLOBAL,
+			0, DIREG_DEV, KEY_QUERY_VALUE);
+		if (key == INVALID_HANDLE_VALUE) continue;
+//		printf_verbose("  Registry Key: acquired\n");
+		
+		size = sizeof(buf);
+		r = RegQueryValueEx(key, "Name", NULL, &type, buf, &size);
+		printf_verbose("  Name: \"%s\"\n", buf);
+
+		r = RegQueryValueEx(key, "PortName", NULL, &type, buf, &size);
+		printf_verbose("  PortName: \"%s\"\n", buf);
+		RegCloseKey(key);
+		if (r != ERROR_SUCCESS || type != REG_SZ) continue;
+
+		com = 0;
+		if (sscanf((char *)buf, "COM%d", &com) != 1) continue;
+		if (com < 1 || com > 999) continue;
+		sprintf(name, "\\\\.\\COM%d", com);  // Microsoft KB115831
+		break;
+//		add_serial_name(name);
+	}
+	SetupDiDestroyDeviceInfoList(info);
+	return com;
+
+}
+HANDLE open_port(const char *path)
+{
+	HANDLE port_handle = INVALID_HANDLE_VALUE;
+	port_handle = CreateFile(path, GENERIC_READ | GENERIC_WRITE,
+		0, 0, OPEN_EXISTING, 0, NULL);
+	if (port_handle == INVALID_HANDLE_VALUE) return 0;
+	return port_handle;
+}
+
+int send_break(HANDLE port_handle)
+{
+	COMMCONFIG port_cfg, port_cfg_134;
+	DWORD len;
+	
+	if (port_handle == INVALID_HANDLE_VALUE) return -1;
+	len = sizeof(COMMCONFIG);
+	if (!GetCommConfig(port_handle, &port_cfg, &len)) return -1;
+	memcpy(&port_cfg_134, &port_cfg, sizeof(COMMCONFIG));
+//
+	port_cfg_134.dcb.BaudRate = 134;
+	if (!SetCommConfig(port_handle, &port_cfg_134, len)) return -1;
+	return 0;
+}
+
+void close_port(HANDLE port_handle)
+{
+	if (port_handle == INVALID_HANDLE_VALUE) return;
+	CloseHandle(port_handle);
+	port_handle = INVALID_HANDLE_VALUE;
+}
+
+
 int soft_reboot(void)
 {
-	HANDLE serial_handle = NULL;
-
-    //soft reboot should work with a variety of product IDs that Teensy can present itself as.
-    //Try them all and see which one works. Not an elegant solution but it's functional.
-    int idx = 0;
-
-    while (prodIDs[idx] && !serial_handle) serial_handle = open_usb_device(0x16C0, prodIDs[idx++]);
-
-	if (!serial_handle) {
-		printf("Error opening USB device\n");
+	HANDLE serial_handle;
+	char name[32];
+	
+	hid_struct_t *hid;
+	hid = find_teensy_hid();
+	if(hid)
+	{
+		hid_send_feature(hid);
+		return 1;
+	}
+	
+	if(!find_teensy_serial(name))
+	{
+		printf("Error: no teensy found for soft reboot\n");
 		return 0;
 	}
-
-	char reboot_command[] = {0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08};
-	int response = write_usb_device(serial_handle, reboot_command, sizeof(reboot_command), 10000);
-
-    closeHandle(serial_handle);
-
-	if (response < 0) {
-		printf("Unable to soft reboot with USB error: %s\n", response);
+	//
+	serial_handle = open_port(name);
+	if (!serial_handle) 
+	{
+		printf("Error: cannot open teensy for soft reboot\n");
 		return 0;
 	}
-
+	//
+	send_break(serial_handle);
+	close_port(serial_handle);
+	CloseHandle(serial_handle);
+	//
+	serial_handle = NULL;
 	return 1;
 }
 
-#endif
+void list_teensies()
+{ 	
+	char name[32];
 
+	find_teensy_hid();
+	find_teensy_serial(name);
+}
+#else
+void list_teensies()
+{ 	
+	printf("Error: list teensies not implemented: use windows");
+}
+	
+#endif
 
 
 /****************************************************************/
