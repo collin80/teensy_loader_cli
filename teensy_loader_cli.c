@@ -81,7 +81,9 @@ int code_size = 0, block_size = 0;
 const char *filename=NULL;
 
 //list of product IDs that should work with soft reset
-uint16_t prodIDs[] = {0x0483, 0x048B, 0x048C, 0x0487, 0x0489, 0x048A, 0x0476, 0};
+//These may be somewhat geared toward Teensy4 but largely the IDs are the same for older boards too (where applicable)
+                    //Ser      2xSer    3xSer    SerHid   MidiSer  MidiAudSer   Everything  MTPSer
+uint16_t prodIDs[] = {0x0483,  0x048B,  0x048C,  0x0487,  0x0489,  0x048A,      0x0476,     0x04D5,     0};
 
 /****************************************************************/
 /*                                                              */
@@ -323,7 +325,7 @@ int hard_reboot(void)
 	usb_dev_handle *rebootor;
 	int r;
 
-	rebootor = open_usb_device(0x16C0, 0x0477);
+	rebootor = open_usb_device(0x16C0, 0x0477); //ID of bootloader
 	if (!rebootor) return 0;
 	r = usb_control_msg(rebootor, 0x21, 9, 0x0200, 0, "reboot", 6, 100);
 	usb_release_interface(rebootor, 0);
@@ -744,8 +746,44 @@ int hard_reboot(void)
 
 int soft_reboot(void)
 {
-	printf("Soft reboot is not implemented for OSX\n");
-	return 0;
+
+	IOHIDDeviceRef serial_handle = NULL;
+
+    //soft reboot should work with a variety of product IDs that Teensy can present itself as.
+    //Try them all and see which one works. Not an elegant solution but it's functional.
+    int idx = 0;
+
+    while (prodIDs[idx] && !serial_handle) serial_handle = open_usb_device(0x16C0, prodIDs[idx++]);
+
+	if (!serial_handle) {
+		//char *error = usb_strerror();
+		//printf("Error opening USB device: %s\n", error);
+        printf("Error opening USB device!\n");
+		return 0;
+	}
+
+	char reboot_command[] = {0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08};
+
+
+
+	//IOReturn response = usb_control_msg(serial_handle, 0x21, 0x20, 0, 0, reboot_command, sizeof reboot_command, 10000);
+
+	double start = CFAbsoluteTimeGetCurrent();
+	while (CFAbsoluteTimeGetCurrent() - 10000000 < start) {
+		response = IOHIDDeviceSetReport(serial_handle,
+			kIOHIDReportTypeOutput, 0, reboot_command, 7);
+		if (ret == kIOReturnSuccess) break;
+	}
+
+	close_usb_device(serial_handle);
+
+	if (response != kIOReturnSuccess) {
+		//char *error = usb_strerror();
+		printf("Unable to soft reboot with USB error: %i\n", (int)response);
+		return 0;
+	}
+
+	return 1;
 }
 
 #endif
