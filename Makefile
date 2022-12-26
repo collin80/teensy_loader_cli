@@ -1,5 +1,5 @@
-OS ?= LINUX
-#OS ?= WINDOWS
+#OS ?= LINUX
+OS = WINDOWS
 #OS ?= MACOSX
 #OS ?= BSD
 
@@ -16,9 +16,10 @@ teensy_loader_cli: teensy_loader_cli.c
 
 
 else ifeq ($(OS), WINDOWS)
-CC ?= i586-mingw32msvc-gcc
+#CC ?= i586-mingw32msvc-gcc
+CC ?= gcc
 CFLAGS ?= -O2 -Wall
-teensy_loader_cli.exe: teensy_loader_cli.c
+teensy_loader_cli: teensy_loader_cli.c
 	$(CC) $(CFLAGS) -s -DUSE_WIN32 -o teensy_loader_cli.exe teensy_loader_cli.c -lhid -lsetupapi -lwinmm
 
 
